@@ -20,57 +20,57 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 
-#define REPORT_PROTOCOL_MOUSE_REPORT_SIZE (4)
-#define REPORT_BUFFER_SIZE REPORT_PROTOCOL_MOUSE_REPORT_SIZE
+#define YOUR_GAMEPAD_REPORT_ID 0x01
+#define REPORT_PROTOCOL_GAMEPAD_REPORT_SIZE (6)
+#define REPORT_BUFFER_SIZE REPORT_PROTOCOL_GAMEPAD_REPORT_SIZE
 
 typedef struct
 {
     esp_hidd_app_param_t app_param;
     esp_hidd_qos_param_t both_qos;
     uint8_t protocol_mode;
-    SemaphoreHandle_t mouse_mutex;
-    TaskHandle_t mouse_task_hdl;
+    SemaphoreHandle_t gamepad_mutex;
+    TaskHandle_t gamepad_task_hdl;
     uint8_t buffer[REPORT_BUFFER_SIZE];
-    int8_t x_dir;
 } local_param_t;
 
 static local_param_t s_local_param = {0};
 
-// HID report descriptor for a generic mouse. The contents of the report are:
-// 3 buttons, moving information for X and Y cursors, information for a wheel.
-uint8_t hid_mouse_descriptor[] = {
-    0x05, 0x01, // USAGE_PAGE (Generic Desktop)
-    0x09, 0x02, // USAGE (Mouse)
-    0xa1, 0x01, // COLLECTION (Application)
+// HID Descriptor for a Gamepad with 15 Buttons + 2 Joysticks
+const uint8_t hid_gamepad_descriptor[] = {
+    0x05, 0x01, // Usage Page (Generic Desktop)
+    0x09, 0x05, // Usage (Gamepad)
+    0xA1, 0x01, // Collection (Application)
 
-    0x09, 0x01, //   USAGE (Pointer)
-    0xa1, 0x00, //   COLLECTION (Physical)
+    // Report ID
+    0x85, 0x01, // Report ID 1
 
-    0x05, 0x09, //     USAGE_PAGE (Button)
-    0x19, 0x01, //     USAGE_MINIMUM (Button 1)
-    0x29, 0x03, //     USAGE_MAXIMUM (Button 3)
-    0x15, 0x00, //     LOGICAL_MINIMUM (0)
-    0x25, 0x01, //     LOGICAL_MAXIMUM (1)
-    0x95, 0x03, //     REPORT_COUNT (3)
-    0x75, 0x01, //     REPORT_SIZE (1)
-    0x81, 0x02, //     INPUT (Data,Var,Abs)
-    0x95, 0x01, //     REPORT_COUNT (1)
-    0x75, 0x05, //     REPORT_SIZE (5)
-    0x81, 0x03, //     INPUT (Cnst,Var,Abs)
+    // Joysticks (X, Y, Rx, Ry) - 8-bit each (-127 to 127)
+    0x09, 0x30, 0x09, 0x31, // Usage (X, Y)
+    0x09, 0x33, 0x09, 0x34, // Usage (Rx, Ry)
+    0x15, 0x81,             // Logical Minimum (-127)
+    0x25, 0x7F,             // Logical Maximum (127)
+    0x75, 0x08,             // Report Size (8 bits)
+    0x95, 0x04,             // Report Count (4)
+    0x81, 0x02,             // Input (Data, Variable, Absolute)
 
-    0x05, 0x01, //     USAGE_PAGE (Generic Desktop)
-    0x09, 0x30, //     USAGE (X)
-    0x09, 0x31, //     USAGE (Y)
-    0x09, 0x38, //     USAGE (Wheel)
-    0x15, 0x81, //     LOGICAL_MINIMUM (-127)
-    0x25, 0x7f, //     LOGICAL_MAXIMUM (127)
-    0x75, 0x08, //     REPORT_SIZE (8)
-    0x95, 0x03, //     REPORT_COUNT (3)
-    0x81, 0x06, //     INPUT (Data,Var,Rel)
+    // Buttons (15 buttons)
+    0x05, 0x09, // Usage Page (Button)
+    0x19, 0x01, // Usage Minimum (Button 1)
+    0x29, 0x0F, // Usage Maximum (Button 15)
+    0x15, 0x00, // Logical Minimum (0)
+    0x25, 0x01, // Logical Maximum (1)
+    0x75, 0x01, // Report Size (1 bit)
+    0x95, 0x0F, // Report Count (15 buttons)
+    0x81, 0x02, // Input (Data, Variable, Absolute)
 
-    0xc0, //   END_COLLECTION
-    0xc0  // END_COLLECTION
-};
+    // Padding to make a full byte (16 bits)
+    0x75, 0x01, // Report Size (1 bit)
+    0x95, 0x01, // Report Count (1)
+    0x81, 0x03, // Input (Constant, Variable, Absolute)
+
+    // End Collection
+    0xC0};
 
 static char *bda2str(esp_bd_addr_t bda, char *str, size_t size)
 {
@@ -85,35 +85,31 @@ static char *bda2str(esp_bd_addr_t bda, char *str, size_t size)
     return str;
 }
 
-const int hid_mouse_descriptor_len = sizeof(hid_mouse_descriptor);
+const int hid_gamepad_descriptor_len = sizeof(hid_gamepad_descriptor);
 
-/**
- * @brief Integrity check of the report ID and report type for GET_REPORT request from HID host.
- *        Boot Protocol Mode requires report ID. For Report Protocol Mode, when the report descriptor
- *        does not declare report ID Global ITEMS, the report ID does not exist in the GET_REPORT request,
- *        and a value of 0 for report_id will occur in ESP_HIDD_GET_REPORT_EVT callback parameter.
- */
 bool check_report_id_type(uint8_t report_id, uint8_t report_type)
 {
     bool ret = false;
-    xSemaphoreTake(s_local_param.mouse_mutex, portMAX_DELAY);
+    xSemaphoreTake(s_local_param.gamepad_mutex, portMAX_DELAY);
+
     do
     {
+        // Ensure the report type is INPUT (gamepad sends input data)
         if (report_type != ESP_HIDD_REPORT_TYPE_INPUT)
         {
             break;
         }
+
+        // If Boot Mode is active (not relevant for a gamepad, but included for completeness)
         if (s_local_param.protocol_mode == ESP_HIDD_BOOT_MODE)
         {
-            if (report_id == ESP_HIDD_BOOT_REPORT_ID_MOUSE)
-            {
-                ret = true;
-                break;
-            }
+            // Gamepads do not use Boot Mode, so reject the request
+            break;
         }
         else
         {
-            if (report_id == 0)
+            // Your custom gamepad report ID check
+            if (report_id == YOUR_GAMEPAD_REPORT_ID) // Define this in your descriptor
             {
                 ret = true;
                 break;
@@ -121,71 +117,63 @@ bool check_report_id_type(uint8_t report_id, uint8_t report_type)
         }
     } while (0);
 
+    // Send an error if the report ID is invalid
     if (!ret)
     {
-        if (s_local_param.protocol_mode == ESP_HIDD_BOOT_MODE)
-        {
-            esp_bt_hid_device_report_error(ESP_HID_PAR_HANDSHAKE_RSP_ERR_INVALID_REP_ID);
-        }
-        else
-        {
-            esp_bt_hid_device_report_error(ESP_HID_PAR_HANDSHAKE_RSP_ERR_INVALID_REP_ID);
-        }
+        esp_bt_hid_device_report_error(ESP_HID_PAR_HANDSHAKE_RSP_ERR_INVALID_REP_ID);
     }
-    xSemaphoreGive(s_local_param.mouse_mutex);
+
+    xSemaphoreGive(s_local_param.gamepad_mutex);
     return ret;
 }
 
-// send the buttons, change in x, and change in y
-void send_mouse_report(uint8_t buttons, char dx, char dy, char wheel)
+// Send the buttons and joystick data
+void send_gamepad_report(char joystick1_x, char joystick1_y, char joystick2_x, char joystick2_y, uint16_t buttons)
 {
     uint8_t report_id;
     uint16_t report_size;
-    xSemaphoreTake(s_local_param.mouse_mutex, portMAX_DELAY);
+    xSemaphoreTake(s_local_param.gamepad_mutex, portMAX_DELAY); // Protect critical section
+
     if (s_local_param.protocol_mode == ESP_HIDD_REPORT_MODE)
     {
-        report_id = 0;
-        report_size = REPORT_PROTOCOL_MOUSE_REPORT_SIZE;
-        s_local_param.buffer[0] = buttons;
-        s_local_param.buffer[1] = dx;
-        s_local_param.buffer[2] = dy;
-        s_local_param.buffer[3] = wheel;
+        // In Report Mode (more flexible)
+        report_id = 0x01; // Default report ID
+        report_size = REPORT_PROTOCOL_GAMEPAD_REPORT_SIZE;
+
+        s_local_param.buffer[0] = joystick1_x;           // Joystick 1 X axis
+        s_local_param.buffer[1] = joystick1_y;           // Joystick 1 Y axis
+        s_local_param.buffer[2] = joystick2_x;           // Joystick 2 X axis
+        s_local_param.buffer[3] = joystick2_y;           // Joystick 2 Y axis
+        s_local_param.buffer[4] = buttons & 0xFF;        // Low byte of button states
+        s_local_param.buffer[5] = (buttons >> 8) & 0x7F; // High byte (only 7 bits used)
     }
-    else
-    {
-        // Boot Mode
-        report_id = ESP_HIDD_BOOT_REPORT_ID_MOUSE;
-        report_size = ESP_HIDD_BOOT_REPORT_SIZE_MOUSE - 1;
-        s_local_param.buffer[0] = buttons;
-        s_local_param.buffer[1] = dx;
-        s_local_param.buffer[2] = dy;
-    }
+    // Send the report
     esp_bt_hid_device_send_report(ESP_HIDD_REPORT_TYPE_INTRDATA, report_id, report_size, s_local_param.buffer);
-    xSemaphoreGive(s_local_param.mouse_mutex);
+    xSemaphoreGive(s_local_param.gamepad_mutex); // Release mutex
+    ESP_LOGI("Gamepad", "Sending report: buttons=%x, joystick1_x=%d, joystick1_y=%d, joystick2_x=%d, joystick2_y=%d", buttons, joystick1_x, joystick1_y, joystick2_x, joystick2_y);
 }
 
-// move the mouse left and right
-void mouse_move_task(void *pvParameters)
+// Test the gamepad by pressing the first button repeatedly
+void gamepad_test_task(void *pvParameters)
 {
-    const char *TAG = "mouse_move_task";
+    const char *TAG = "gamepad_test_task";
 
     ESP_LOGI(TAG, "starting");
+
+    // Variables for button states and joystick positions
+    uint16_t buttons = 0;
+
     for (;;)
     {
-        s_local_param.x_dir = 1;
-        int8_t step = 10;
-        for (int i = 0; i < 2; i++)
-        {
-            xSemaphoreTake(s_local_param.mouse_mutex, portMAX_DELAY);
-            s_local_param.x_dir *= -1;
-            xSemaphoreGive(s_local_param.mouse_mutex);
-            for (int j = 0; j < 100; j++)
-            {
-                send_mouse_report(0, s_local_param.x_dir * step, 0, 0);
-                vTaskDelay(50 / portTICK_PERIOD_MS);
-            }
-        }
-        vTaskDelay(1000 / portTICK_PERIOD_MS);
+        // Simulate pressing the first button
+        buttons = 0x7FFF;                             // First button pressed
+        send_gamepad_report(127, 0, 127, 0, buttons); // Send report with only first button pressed
+        vTaskDelay(1000 / portTICK_PERIOD_MS);        // Delay for 500ms
+
+        // Release the first button
+        buttons = 0x00;                               // No button pressed
+        send_gamepad_report(0, 127, 0, 127, buttons); // Send report with no buttons pressed
+        vTaskDelay(1000 / portTICK_PERIOD_MS);        // Delay for 500ms
     }
 }
 
@@ -253,24 +241,24 @@ void esp_bt_gap_cb(esp_bt_gap_cb_event_t event, esp_bt_gap_cb_param_t *param)
 
 void bt_app_task_start_up(void)
 {
-    s_local_param.mouse_mutex = xSemaphoreCreateMutex();
+    s_local_param.gamepad_mutex = xSemaphoreCreateMutex();
     memset(s_local_param.buffer, 0, REPORT_BUFFER_SIZE);
-    xTaskCreate(mouse_move_task, "mouse_move_task", 2 * 1024, NULL, configMAX_PRIORITIES - 3, &s_local_param.mouse_task_hdl);
+    xTaskCreate(gamepad_test_task, "gamepad_test_task", 2 * 1024, NULL, configMAX_PRIORITIES - 3, &s_local_param.gamepad_task_hdl);
     return;
 }
 
 void bt_app_task_shut_down(void)
 {
-    if (s_local_param.mouse_task_hdl)
+    if (s_local_param.gamepad_task_hdl)
     {
-        vTaskDelete(s_local_param.mouse_task_hdl);
-        s_local_param.mouse_task_hdl = NULL;
+        vTaskDelete(s_local_param.gamepad_task_hdl);
+        s_local_param.gamepad_task_hdl = NULL;
     }
 
-    if (s_local_param.mouse_mutex)
+    if (s_local_param.gamepad_mutex)
     {
-        vSemaphoreDelete(s_local_param.mouse_mutex);
-        s_local_param.mouse_mutex = NULL;
+        vSemaphoreDelete(s_local_param.gamepad_mutex);
+        s_local_param.gamepad_mutex = NULL;
     }
     return;
 }
@@ -396,18 +384,12 @@ void esp_bt_hidd_cb(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
             uint16_t report_len;
             if (s_local_param.protocol_mode == ESP_HIDD_REPORT_MODE)
             {
-                report_id = 0;
-                report_len = REPORT_PROTOCOL_MOUSE_REPORT_SIZE;
+                report_id = 1;
+                report_len = REPORT_PROTOCOL_GAMEPAD_REPORT_SIZE;
             }
-            else
-            {
-                // Boot Mode
-                report_id = ESP_HIDD_BOOT_REPORT_ID_MOUSE;
-                report_len = ESP_HIDD_BOOT_REPORT_SIZE_MOUSE - 1;
-            }
-            xSemaphoreTake(s_local_param.mouse_mutex, portMAX_DELAY);
+            xSemaphoreTake(s_local_param.gamepad_mutex, portMAX_DELAY);
             esp_bt_hid_device_send_report(param->get_report.report_type, report_id, report_len, s_local_param.buffer);
-            xSemaphoreGive(s_local_param.mouse_mutex);
+            xSemaphoreGive(s_local_param.gamepad_mutex);
         }
         else
         {
@@ -419,20 +401,13 @@ void esp_bt_hidd_cb(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
         break;
     case ESP_HIDD_SET_PROTOCOL_EVT:
         ESP_LOGI(TAG, "ESP_HIDD_SET_PROTOCOL_EVT");
-        if (param->set_protocol.protocol_mode == ESP_HIDD_BOOT_MODE)
-        {
-            ESP_LOGI(TAG, "  - boot protocol");
-            xSemaphoreTake(s_local_param.mouse_mutex, portMAX_DELAY);
-            s_local_param.x_dir = -1;
-            xSemaphoreGive(s_local_param.mouse_mutex);
-        }
-        else if (param->set_protocol.protocol_mode == ESP_HIDD_REPORT_MODE)
+        if (param->set_protocol.protocol_mode == ESP_HIDD_REPORT_MODE)
         {
             ESP_LOGI(TAG, "  - report protocol");
         }
-        xSemaphoreTake(s_local_param.mouse_mutex, portMAX_DELAY);
+        xSemaphoreTake(s_local_param.gamepad_mutex, portMAX_DELAY);
         s_local_param.protocol_mode = param->set_protocol.protocol_mode;
-        xSemaphoreGive(s_local_param.mouse_mutex);
+        xSemaphoreGive(s_local_param.gamepad_mutex);
         break;
     case ESP_HIDD_INTR_DATA_EVT:
         ESP_LOGI(TAG, "ESP_HIDD_INTR_DATA_EVT");
@@ -515,7 +490,7 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "setting device name");
-    esp_bt_gap_set_device_name("HID Mouse Example");
+    esp_bt_gap_set_device_name("HID Gamepad Example");
 
     ESP_LOGI(TAG, "setting cod major, peripheral");
     esp_bt_cod_t cod;
@@ -528,12 +503,12 @@ void app_main(void)
     // to be used in the call of `esp_bt_hid_device_register_app` after profile initialization finishes
     do
     {
-        s_local_param.app_param.name = "Mouse";
-        s_local_param.app_param.description = "Mouse Example";
+        s_local_param.app_param.name = "Gamepad";
+        s_local_param.app_param.description = "Gamepad Example";
         s_local_param.app_param.provider = "ESP32";
-        s_local_param.app_param.subclass = ESP_HID_CLASS_MIC;
-        s_local_param.app_param.desc_list = hid_mouse_descriptor;
-        s_local_param.app_param.desc_list_len = hid_mouse_descriptor_len;
+        s_local_param.app_param.subclass = ESP_HID_CLASS_GPD;
+        s_local_param.app_param.desc_list = hid_gamepad_descriptor;
+        s_local_param.app_param.desc_list_len = hid_gamepad_descriptor_len;
 
         memset(&s_local_param.both_qos, 0, sizeof(esp_hidd_qos_param_t)); // don't set the qos parameters
     } while (0);
