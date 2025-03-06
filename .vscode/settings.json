@@ -5,5 +5,11 @@
   "idf.pythonInstallPath": "/Users/tayjiunyuan/miniconda3/bin/python3",
   "idf.port": "/dev/tty.usbserial-56980113321",
   "idf.flashType": "UART",
-  "git.ignoreLimitWarning": true
+  "git.ignoreLimitWarning": true,
+  "files.associations": {
+    "esp_hidd_api.h": "c",
+    "gpio.h": "c",
+    "esp_timer.h": "c",
+    "task.h": "c"
+  }
 }
