@@ -30,9 +30,7 @@
 typedef struct
 {
     gpio_num_t gpio_pin;           // GPIO pin number
-    bool last_state;               // Last state of the button
     bool pressed;                  // Current press state
-    unsigned long last_press_time; // Timestamp for debouncing
 } button_t;
 
 button_t buttons[] = {
@@ -57,22 +55,6 @@ void init_buttons(void)
     }
 }
 
-// // Function to handle button press and debounce
-// void handle_button_press(button_t *btn)
-// {
-//     bool current_state = gpio_get_level(btn->gpio_pin);       // Read current button state
-//     unsigned long current_time = esp_timer_get_time() / 1000; // Convert to ms
-
-//     if (current_state == 0 && btn->last_state == 1)
-//     { // Detect press (active low)
-//         if (current_time - btn->last_press_time > DEBOUNCE_TIME)
-//         { // Debounce check
-//             btn->pressed = true;
-//             btn->last_press_time = current_time; // Update last press time
-//         }
-//     }
-//     btn->last_state = current_state; // Update last button state
-// }
 
 void handle_button_press(button_t *btn)
 {
