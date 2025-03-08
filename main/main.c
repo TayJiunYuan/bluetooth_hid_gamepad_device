@@ -21,21 +21,13 @@
 #include "freertos/task.h"
 #include "freertos/semphr.h"
 
-#define DEBOUNCE_TIME 50 // Debounce time in milliseconds
-
 #define YOUR_GAMEPAD_REPORT_ID 0x01
 #define REPORT_PROTOCOL_GAMEPAD_REPORT_SIZE (6)
 #define REPORT_BUFFER_SIZE REPORT_PROTOCOL_GAMEPAD_REPORT_SIZE
 
-typedef struct
-{
-    gpio_num_t gpio_pin;           // GPIO pin number
-    bool pressed;                  // Current press state
-} button_t;
-
-button_t buttons[] = {
-    {13, true, false, 0}, // Button 0 (GPIO 13)
-    {33, true, false, 0}  // Button 1 (GPIO 25)
+gpio_num_t buttons[] = {
+    13, // Button 0 (GPIO 13)
+    33, // Button 1 (GPIO 25)
 };
 
 #define NUM_BUTTONS (sizeof(buttons) / sizeof(buttons[0])) // Number of buttons
@@ -47,32 +39,11 @@ void init_buttons(void)
     {
         gpio_config_t io_conf = {
             .intr_type = GPIO_INTR_DISABLE, // Disable interrupt (polling)
-            .pin_bit_mask = (1ULL << buttons[i].gpio_pin),
+            .pin_bit_mask = (1ULL << buttons[i]),
             .mode = GPIO_MODE_INPUT,
             .pull_up_en = GPIO_PULLUP_ENABLE, // Use internal pull-up resistor
             .pull_down_en = GPIO_PULLDOWN_DISABLE};
         gpio_config(&io_conf);
-    }
-}
-
-
-void handle_button_press(button_t *btn)
-{
-    bool current_state = gpio_get_level(btn->gpio_pin); // Read current button state
-    if (current_state == 0)
-    {
-        btn->pressed = true;
-    }
-}
-
-// Function to process button presses
-void process_button_press(int button_index)
-{
-    button_t *btn = &buttons[button_index];
-    if (btn->pressed)
-    {
-        ESP_LOGI("button_input_task", "Button %d Pressed!", button_index);
-        btn->pressed = false; // Reset the flag
     }
 }
 
@@ -202,7 +173,6 @@ void send_gamepad_report(char joystick1_x, char joystick1_y, char joystick2_x, c
     // Send the report
     esp_bt_hid_device_send_report(ESP_HIDD_REPORT_TYPE_INTRDATA, report_id, report_size, s_local_param.buffer);
     xSemaphoreGive(s_local_param.gamepad_mutex); // Release mutex
-    // ESP_LOGI("Gamepad", "Sending report: buttons=%x, joystick1_x=%d, joystick1_y=%d, joystick2_x=%d, joystick2_y=%d", buttons, joystick1_x, joystick1_y, joystick2_x, joystick2_y);
 }
 
 // Test the gamepad by pressing the first button repeatedly
@@ -218,32 +188,20 @@ void gamepad_test_task(void *pvParameters)
 
     for (;;)
     {
+
         for (int i = 0; i < NUM_BUTTONS; i++)
         {
-            handle_button_press(&buttons[i]); // Check button press and debounce
-            if (buttons[i].pressed)
+            if (gpio_get_level(buttons[i])) // High for button not pressed, Low for button pressed
             {
-                buttons_state |= (1 << i); // Use bitwise OR to set the bit
+                buttons_state &= ~(1 << i);
             }
             else
             {
-                // Clear the corresponding bit in the buttons_state (button is not pressed)
-                buttons_state &= ~(1 << i); // Use bitwise AND with negation to clear the bit
+                buttons_state |= (1 << i);
             }
-            process_button_press(i); // Process the button press
         }
         send_gamepad_report(0, 0, 0, 0, buttons_state);
-
         vTaskDelay(pdMS_TO_TICKS(20)); // Poll every 10 ms
-
-        // buttons_state = 0x7FFF;                             // First button pressed
-        // send_gamepad_report(127, 0, 127, 0, buttons_state); // Send report with only first button pressed
-        // vTaskDelay(pdMS_TO_TICKS(20));        // Delay for 500ms
-
-        // // Release the first button
-        // buttons_state = 0x00;                               // No button pressed
-        // send_gamepad_report(0, 127, 0, 127, buttons_state); // Send report with no buttons pressed
-        // vTaskDelay(pdMS_TO_TICKS(20));        // Delay for 500ms
     }
 }
 
