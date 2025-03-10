@@ -12,6 +12,7 @@
     "esp_timer.h": "c",
     "task.h": "c",
     "esp_bt_main.h": "c",
-    "adc.h": "c"
+    "adc.h": "c",
+    "esp_wifi.h": "c"
   }
 }

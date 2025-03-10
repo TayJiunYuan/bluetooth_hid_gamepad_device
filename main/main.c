@@ -3,6 +3,7 @@
  *
  * SPDX-License-Identifier: Unlicense OR CC0-1.0
  */
+#include "esp_wifi.h"
 #include "driver/gpio.h"
 #include "driver/adc.h"
 #include "esp_timer.h"
@@ -26,12 +27,49 @@
 #define REPORT_PROTOCOL_GAMEPAD_REPORT_SIZE (10)
 #define REPORT_BUFFER_SIZE REPORT_PROTOCOL_GAMEPAD_REPORT_SIZE
 
-gpio_num_t buttons[] = {
-    13, // Button 0 (GPIO 13)
-    33, // Button 1 (GPIO 25)
-};
+// Controller Buttons (in order)
+#define START_PIN 22                 // Button 0
+#define MODE_PIN 23                  // Button 1
+#define DPAD_UP_PIN 5                // Button 2
+#define DPAD_DOWN_PIN 18             // Button 3
+#define DPAD_LEFT_PIN 19             // Button 4
+#define DPAD_RIGHT_PIN 21            // Button 5
+#define A_PIN 13                     // Button 6
+#define B_PIN 12                     // Button 7
+#define X_PIN 14                     // Button 8
+#define Y_PIN 27                     // Button 9
+#define LEFT_BUMPER_PIN 16           // Button 10
+#define LEFT_TRIGGER_PIN 17          // Button 11
+#define RIGHT_BUMPER_PIN 26          // Button 12
+#define RIGHT_TRIGGER_PIN 25         // Button 13
+#define LEFT_JOYSTICK_BUTTON_PIN 33  // Button 14
+#define RIGHT_JOYSTICK_BUTTON_PIN 32 // Button 15
 
-#define NUM_BUTTONS (sizeof(buttons) / sizeof(buttons[0])) // Number of buttons
+// Joystick Axis
+#define LEFT_JOYSTICK_X_CHANNEL ADC1_CHANNEL_7  // GPIO35
+#define LEFT_JOYSTICK_Y_CHANNEL ADC1_CHANNEL_6  // GPIO34
+#define RIGHT_JOYSTICK_X_CHANNEL ADC1_CHANNEL_3 // GPIO39/ VN
+#define RIGHT_JOYSTICK_Y_CHANNEL ADC1_CHANNEL_0 // GPIO36/ VP
+
+gpio_num_t buttons[] = {
+    START_PIN,
+    MODE_PIN,
+    DPAD_UP_PIN,
+    DPAD_DOWN_PIN,
+    DPAD_LEFT_PIN,
+    DPAD_RIGHT_PIN,
+    A_PIN,
+    B_PIN,
+    X_PIN,
+    Y_PIN,
+    LEFT_BUMPER_PIN,
+    LEFT_TRIGGER_PIN,
+    RIGHT_BUMPER_PIN,
+    RIGHT_TRIGGER_PIN,
+    LEFT_JOYSTICK_BUTTON_PIN,
+    RIGHT_JOYSTICK_BUTTON_PIN};
+
+#define NUM_BUTTONS (sizeof(buttons) / sizeof(buttons[0]))
 
 // Function to initialize buttons
 void init_buttons(void)
@@ -48,13 +86,6 @@ void init_buttons(void)
     }
 }
 
-void init_adc()
-{
-    adc1_config_width(ADC_WIDTH_BIT_12);                       // Set ADC to 12-bit resolution (0 - 4095)
-    adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_6); // Set max input voltage to ~3.9V
-    adc1_config_channel_atten(ADC1_CHANNEL_7, ADC_ATTEN_DB_6); // Set max input voltage to ~3.9V
-}
-
 typedef struct
 {
     esp_hidd_app_param_t app_param;
@@ -67,7 +98,7 @@ typedef struct
 
 static local_param_t s_local_param = {0};
 
-// HID Descriptor for a Gamepad with 15 Buttons + 2 Joysticks
+// HID Descriptor for a Gamepad with 16 Buttons + 2 Joysticks
 const uint8_t hid_gamepad_descriptor[] = {
     0x05, 0x01, // Usage Page (Generic Desktop)
     0x09, 0x05, // Usage (Gamepad)
@@ -85,20 +116,15 @@ const uint8_t hid_gamepad_descriptor[] = {
     0x95, 0x04,             // Report Count (4)
     0x81, 0x02,             // Input (Data, Variable, Absolute)
 
-    // Buttons (15 buttons)
+    // Buttons (16 buttons)
     0x05, 0x09, // Usage Page (Button)
     0x19, 0x01, // Usage Minimum (Button 1)
-    0x29, 0x0F, // Usage Maximum (Button 15)
+    0x29, 0x10, // Usage Maximum (Button 16)
     0x15, 0x00, // Logical Minimum (0)
     0x25, 0x01, // Logical Maximum (1)
     0x75, 0x01, // Report Size (1 bit)
-    0x95, 0x0F, // Report Count (15 buttons)
+    0x95, 0x10, // Report Count (16 buttons)
     0x81, 0x02, // Input (Data, Variable, Absolute)
-
-    // Padding to make a full byte (16 bits)
-    0x75, 0x01, // Report Size (1 bit)
-    0x95, 0x01, // Report Count (1)
-    0x81, 0x03, // Input (Constant, Variable, Absolute)
 
     // End Collection
     0xC0};
@@ -186,8 +212,9 @@ void send_gamepad_report(int16_t joystick1_x, int16_t joystick1_y, int16_t joyst
         // Joystick 2 Y axis (16-bit)
         s_local_param.buffer[6] = joystick2_y & 0xFF;
         s_local_param.buffer[7] = (joystick2_y >> 8) & 0xFF;
+
         s_local_param.buffer[8] = buttons & 0xFF;        // Low byte of button states
-        s_local_param.buffer[9] = (buttons >> 8) & 0x7F; // High byte (only 7 bits used)
+        s_local_param.buffer[9] = (buttons >> 8) & 0xFF; // High byte
     }
     // Send the report
     esp_bt_hid_device_send_report(ESP_HIDD_REPORT_TYPE_INTRDATA, report_id, report_size, s_local_param.buffer);
@@ -203,7 +230,7 @@ void gamepad_test_task(void *pvParameters)
 
     // Variables for button states and joystick positions
     uint16_t buttons_state = 0;
-    init_buttons(); // Initialize buttons
+    init_buttons();
 
     for (;;)
     {
@@ -219,17 +246,14 @@ void gamepad_test_task(void *pvParameters)
                 buttons_state |= (1 << i);
             }
         }
-        // get joystick levels
-        // uint8_t joy_1_x = ((adc1_get_raw(ADC_CHANNEL_6) - 2048) / 32);
-        // int16_t scaled_x = ((joy_1_x * 65535) / 4095) - 32768;
 
-        int16_t joy_1_x = (adc1_get_raw(ADC_CHANNEL_6) * 65535 / 4095) - 32768 ;
-        int16_t joy_1_y = (adc1_get_raw(ADC_CHANNEL_7) * 65535 / 4095) - 32768 ;
-        int16_t joy_2_x = 0;
-        int16_t joy_2_y = 0;
-        send_gamepad_report(joy_1_x, joy_1_y, joy_2_x, joy_2_y, buttons_state);
+        int16_t joy_left_x = (adc1_get_raw(LEFT_JOYSTICK_X_CHANNEL) * 65535 / 4095) - 32768;
+        int16_t joy_left_y = (adc1_get_raw(LEFT_JOYSTICK_Y_CHANNEL) * 65535 / 4095) - 32768;
+        int16_t joy_right_x = (adc1_get_raw(RIGHT_JOYSTICK_X_CHANNEL) * 65535 / 4095) - 32768;
+        int16_t joy_right_y = (adc1_get_raw(RIGHT_JOYSTICK_Y_CHANNEL) * 65535 / 4095) - 32768;
+        send_gamepad_report(joy_left_x, joy_left_y, joy_right_x, joy_right_y, buttons_state);
 
-        vTaskDelay(pdMS_TO_TICKS(20)); // Poll every 10 ms
+        vTaskDelay(pdMS_TO_TICKS(10)); // Poll every 10 ms
     }
 }
 
@@ -496,6 +520,7 @@ void esp_bt_hidd_cb(esp_hidd_cb_event_t event, esp_hidd_cb_param_t *param)
 
 void app_main(void)
 {
+    esp_wifi_deinit(); // Disable wifi hardware
     const char *TAG = "app_main";
     esp_err_t ret;
     char bda_str[18] = {0};
