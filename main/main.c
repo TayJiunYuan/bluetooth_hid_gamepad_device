@@ -4,6 +4,7 @@
  * SPDX-License-Identifier: Unlicense OR CC0-1.0
  */
 #include "driver/gpio.h"
+#include "driver/adc.h"
 #include "esp_timer.h"
 #include "esp_log.h"
 #include "esp_hidd_api.h"
@@ -22,7 +23,7 @@
 #include "freertos/semphr.h"
 
 #define YOUR_GAMEPAD_REPORT_ID 0x01
-#define REPORT_PROTOCOL_GAMEPAD_REPORT_SIZE (6)
+#define REPORT_PROTOCOL_GAMEPAD_REPORT_SIZE (10)
 #define REPORT_BUFFER_SIZE REPORT_PROTOCOL_GAMEPAD_REPORT_SIZE
 
 gpio_num_t buttons[] = {
@@ -47,6 +48,13 @@ void init_buttons(void)
     }
 }
 
+void init_adc()
+{
+    adc1_config_width(ADC_WIDTH_BIT_12);                       // Set ADC to 12-bit resolution (0 - 4095)
+    adc1_config_channel_atten(ADC1_CHANNEL_6, ADC_ATTEN_DB_6); // Set max input voltage to ~3.9V
+    adc1_config_channel_atten(ADC1_CHANNEL_7, ADC_ATTEN_DB_6); // Set max input voltage to ~3.9V
+}
+
 typedef struct
 {
     esp_hidd_app_param_t app_param;
@@ -68,12 +76,12 @@ const uint8_t hid_gamepad_descriptor[] = {
     // Report ID
     0x85, 0x01, // Report ID 1
 
-    // Joysticks (X, Y, Rx, Ry) - 8-bit each (-127 to 127)
+    // Joysticks (X, Y, Rx, Ry) - 16-bit each (0 to 4095)
     0x09, 0x30, 0x09, 0x31, // Usage (X, Y)
     0x09, 0x33, 0x09, 0x34, // Usage (Rx, Ry)
-    0x15, 0x81,             // Logical Minimum (-127)
-    0x25, 0x7F,             // Logical Maximum (127)
-    0x75, 0x08,             // Report Size (8 bits)
+    0x16, 0x00, 0x80,       // Logical Minimum (-32768)
+    0x26, 0xFF, 0x7F,       // Logical Maximum (32767)
+    0x75, 0x10,             // Report Size (16 bits)
     0x95, 0x04,             // Report Count (4)
     0x81, 0x02,             // Input (Data, Variable, Absolute)
 
@@ -151,7 +159,7 @@ bool check_report_id_type(uint8_t report_id, uint8_t report_type)
 }
 
 // Send the buttons and joystick data
-void send_gamepad_report(char joystick1_x, char joystick1_y, char joystick2_x, char joystick2_y, uint16_t buttons)
+void send_gamepad_report(int16_t joystick1_x, int16_t joystick1_y, int16_t joystick2_x, int16_t joystick2_y, uint16_t buttons)
 {
     uint8_t report_id;
     uint16_t report_size;
@@ -163,12 +171,23 @@ void send_gamepad_report(char joystick1_x, char joystick1_y, char joystick2_x, c
         report_id = 0x01; // Default report ID
         report_size = REPORT_PROTOCOL_GAMEPAD_REPORT_SIZE;
 
-        s_local_param.buffer[0] = joystick1_x;           // Joystick 1 X axis
-        s_local_param.buffer[1] = joystick1_y;           // Joystick 1 Y axis
-        s_local_param.buffer[2] = joystick2_x;           // Joystick 2 X axis
-        s_local_param.buffer[3] = joystick2_y;           // Joystick 2 Y axis
-        s_local_param.buffer[4] = buttons & 0xFF;        // Low byte of button states
-        s_local_param.buffer[5] = (buttons >> 8) & 0x7F; // High byte (only 7 bits used)
+        // Joystick 1 X axis (16-bit)
+        s_local_param.buffer[0] = joystick1_x & 0xFF;        // Low byte
+        s_local_param.buffer[1] = (joystick1_x >> 8) & 0xFF; // High byte
+
+        // Joystick 1 Y axis (16-bit)
+        s_local_param.buffer[2] = joystick1_y & 0xFF;
+        s_local_param.buffer[3] = (joystick1_y >> 8) & 0xFF;
+
+        // Joystick 2 X axis (16-bit)
+        s_local_param.buffer[4] = joystick2_x & 0xFF;
+        s_local_param.buffer[5] = (joystick2_x >> 8) & 0xFF;
+
+        // Joystick 2 Y axis (16-bit)
+        s_local_param.buffer[6] = joystick2_y & 0xFF;
+        s_local_param.buffer[7] = (joystick2_y >> 8) & 0xFF;
+        s_local_param.buffer[8] = buttons & 0xFF;        // Low byte of button states
+        s_local_param.buffer[9] = (buttons >> 8) & 0x7F; // High byte (only 7 bits used)
     }
     // Send the report
     esp_bt_hid_device_send_report(ESP_HIDD_REPORT_TYPE_INTRDATA, report_id, report_size, s_local_param.buffer);
@@ -188,7 +207,7 @@ void gamepad_test_task(void *pvParameters)
 
     for (;;)
     {
-
+        // get button levels
         for (int i = 0; i < NUM_BUTTONS; i++)
         {
             if (gpio_get_level(buttons[i])) // High for button not pressed, Low for button pressed
@@ -200,7 +219,16 @@ void gamepad_test_task(void *pvParameters)
                 buttons_state |= (1 << i);
             }
         }
-        send_gamepad_report(0, 0, 0, 0, buttons_state);
+        // get joystick levels
+        // uint8_t joy_1_x = ((adc1_get_raw(ADC_CHANNEL_6) - 2048) / 32);
+        // int16_t scaled_x = ((joy_1_x * 65535) / 4095) - 32768;
+
+        int16_t joy_1_x = (adc1_get_raw(ADC_CHANNEL_6) * 65535 / 4095) - 32768 ;
+        int16_t joy_1_y = (adc1_get_raw(ADC_CHANNEL_7) * 65535 / 4095) - 32768 ;
+        int16_t joy_2_x = 0;
+        int16_t joy_2_y = 0;
+        send_gamepad_report(joy_1_x, joy_1_y, joy_2_x, joy_2_y, buttons_state);
+
         vTaskDelay(pdMS_TO_TICKS(20)); // Poll every 10 ms
     }
 }
