@@ -3,7 +3,7 @@
   "idf.espIdfPath": "/Users/tayjiunyuan/esp/v5.3.1/esp-idf",
   "idf.toolsPath": "/Users/tayjiunyuan/.espressif",
   "idf.pythonInstallPath": "/Users/tayjiunyuan/miniconda3/bin/python3",
-  "idf.port": "/dev/tty.usbserial-56980113321",
+  "idf.port": "/dev/tty.usbserial-56980288681",
   "idf.flashType": "UART",
   "git.ignoreLimitWarning": true,
   "files.associations": {

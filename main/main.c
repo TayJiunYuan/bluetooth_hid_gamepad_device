@@ -27,7 +27,6 @@
 #define REPORT_PROTOCOL_GAMEPAD_REPORT_SIZE (10)
 #define REPORT_BUFFER_SIZE REPORT_PROTOCOL_GAMEPAD_REPORT_SIZE
 
-// Controller Buttons (in order)
 #define START_PIN 22                 // Button 0
 #define MODE_PIN 23                  // Button 1
 #define DPAD_UP_PIN 5                // Button 2
@@ -71,16 +70,15 @@ gpio_num_t buttons[] = {
 
 #define NUM_BUTTONS (sizeof(buttons) / sizeof(buttons[0]))
 
-// Function to initialize buttons
 void init_buttons(void)
 {
     for (int i = 0; i < NUM_BUTTONS; i++)
     {
         gpio_config_t io_conf = {
-            .intr_type = GPIO_INTR_DISABLE, // Disable interrupt (polling)
+            .intr_type = GPIO_INTR_DISABLE, // Disable interrupt 
             .pin_bit_mask = (1ULL << buttons[i]),
             .mode = GPIO_MODE_INPUT,
-            .pull_up_en = GPIO_PULLUP_ENABLE, // Use internal pull-up resistor
+            .pull_up_en = GPIO_PULLUP_ENABLE, // Internal pull-up resistor
             .pull_down_en = GPIO_PULLDOWN_DISABLE};
         gpio_config(&io_conf);
     }
@@ -98,7 +96,6 @@ typedef struct
 
 static local_param_t s_local_param = {0};
 
-// HID Descriptor for a Gamepad with 16 Buttons + 2 Joysticks
 const uint8_t hid_gamepad_descriptor[] = {
     0x05, 0x01, // Usage Page (Generic Desktop)
     0x09, 0x05, // Usage (Gamepad)
@@ -151,21 +148,17 @@ bool check_report_id_type(uint8_t report_id, uint8_t report_type)
 
     do
     {
-        // Ensure the report type is INPUT (gamepad sends input data)
         if (report_type != ESP_HIDD_REPORT_TYPE_INPUT)
         {
             break;
         }
 
-        // If Boot Mode is active (not relevant for a gamepad, but included for completeness)
         if (s_local_param.protocol_mode == ESP_HIDD_BOOT_MODE)
         {
-            // Gamepads do not use Boot Mode, so reject the request
             break;
         }
         else
         {
-            // Your custom gamepad report ID check
             if (report_id == YOUR_GAMEPAD_REPORT_ID) // Define this in your descriptor
             {
                 ret = true;
@@ -174,7 +167,6 @@ bool check_report_id_type(uint8_t report_id, uint8_t report_type)
         }
     } while (0);
 
-    // Send an error if the report ID is invalid
     if (!ret)
     {
         esp_bt_hid_device_report_error(ESP_HID_PAR_HANDSHAKE_RSP_ERR_INVALID_REP_ID);
@@ -184,7 +176,6 @@ bool check_report_id_type(uint8_t report_id, uint8_t report_type)
     return ret;
 }
 
-// Send the buttons and joystick data
 void send_gamepad_report(int16_t joystick1_x, int16_t joystick1_y, int16_t joystick2_x, int16_t joystick2_y, uint16_t buttons)
 {
     uint8_t report_id;
@@ -571,7 +562,7 @@ void app_main(void)
     }
 
     ESP_LOGI(TAG, "setting device name");
-    esp_bt_gap_set_device_name("HID Gamepad Example");
+    esp_bt_gap_set_device_name("ESP32 Gamepad");
 
     ESP_LOGI(TAG, "setting cod major, peripheral");
     esp_bt_cod_t cod;
@@ -580,8 +571,6 @@ void app_main(void)
 
     vTaskDelay(2000 / portTICK_PERIOD_MS);
 
-    // Initialize HID SDP information and L2CAP parameters.
-    // to be used in the call of `esp_bt_hid_device_register_app` after profile initialization finishes
     do
     {
         s_local_param.app_param.name = "Gamepad";
